@@ -1,4 +1,9 @@
-draco
+draco~=2.0.1
 vega_datasets
 vl-convert-python
-openai
+openai~=1.58.1
+
+tensorflow~=2.18.0
+transformers~=4.47.1
+CairoSVG~=2.7.1
+altair~=5.5.0
