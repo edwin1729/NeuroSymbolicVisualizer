@@ -2,7 +2,8 @@ draco~=2.0.1
 vega_datasets
 vl-convert-python
 openai~=1.58.1
-
 CairoSVG~=2.7.1
 altair~=5.5.0
 ipython~=8.30.0
+jupyter
+
