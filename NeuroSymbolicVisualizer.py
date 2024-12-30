@@ -1,6 +1,8 @@
 import difflib
 import os
 import base64
+from typing import TypedDict
+
 import cairosvg
 
 import draco as drc
@@ -10,8 +12,6 @@ import altair as alt
 from vega_datasets import data
 from altair.vegalite.v5.api import FacetChart
 from openai import OpenAI
-from itertools import combinations
-
 
 class NeuroSymbolicVisualizer:
     def __init__(self, data_source, img_folder="images"):
@@ -25,8 +25,9 @@ class NeuroSymbolicVisualizer:
         self.df.rename(columns=str.lower, inplace=True)
 
         # Create schema and base specification
-        self.schema = drc.schema_from_dataframe(self.df)
-        self.data_schema_facts = drc.dict_to_facts(self.schema)
+        # Schema is a subtype of TypedDict
+        self.schema: TypedDict = drc.schema_from_dataframe(self.df)
+        self.data_schema_facts: list[str] = drc.dict_to_facts(self.schema)
         self.input_spec_base = self.data_schema_facts + [
             "entity(view,root,v0).",
             "entity(mark,v0,m0).",
@@ -38,23 +39,31 @@ class NeuroSymbolicVisualizer:
         return os.path.join(self.img_folder, f"{col1}-{col2}.svg")
 
     def recommend_columns_llm(self) -> (str, str):
+        """
+        Recommends two columns for visualization based on the schema and potential correlation.
+
+        :raises IndexError: If fewer than two columns are returned and no matches are available.
+        :return: A tuple containing the names of the two recommended columns for visualization.
+        """
         column_guesses = self.column_choice_llm.chat.completions.create(
             model="gpt-4o-mini",
             messages=[
                 {"role": "system",
-                 "content": "You're part of visualization recommendation system. You pick two features from a python dict file to plot, whose correlation is insightful. Answer in two words seperated by a space"},
+                 "content": "You're part of visualization recommendation system. You pick two features from a python "
+                            "dict file to plot, whose correlation is insightful. Answer in two words seperated by a "
+                            "space"},
                 {
                     "role": "user",
                     "content": str(self.schema)
                 }
             ]
         ).choices[0].message.content.split()
-        # If the LLM provides an invalid output (which it hasen't done in practice) take the closest one
+        # If the LLM provides an invalid output (which it hasn't done in practice) take the closest one
         columns = [difflib.get_close_matches(word, self.all_columns(), n=1, cutoff=0.0)[0]
                    for word in column_guesses[:2]]
         return columns[0], columns[1]
 
-    def recommend_charts_asp(self, col1: str, col2: str):
+    def recommend_chart_asp(self, col1: str, col2: str) -> FacetChart:
         """
         Generates and saves recommended charts based on the input specification.
 
@@ -79,6 +88,7 @@ class NeuroSymbolicVisualizer:
         chart: FacetChart = self.renderer.render(spec=spec_answer, data=self.df)
         chart = chart.configure_view(continuousWidth=130, continuousHeight=130)
         chart.save(self.get_img_file_path(col1, col2))
+        return chart
 
     def encode_img_base64(self, image_path: str) -> str:
         """
@@ -88,9 +98,13 @@ class NeuroSymbolicVisualizer:
             png_data = cairosvg.svg2png(url=image_path)
             return base64.b64encode(png_data).decode("utf-8")
 
-    def eval_chart_llm(self, col1: str, col2: str) -> int:
+    def eval_chart_llm(self, col1: str, col2: str) -> (int, str):
         """
+        Uses an LLM capable to evaluate the chart visually (as a png). Additionally also passing the schema of the dataset,
+        and asking for an explanation has the effect of making score returned more sensible
+
         Requires that *recommend_charts_asp* has been called beforehand.
+
         :return: score of the chart according to llm in the range [1,100]
         """
         base64_img = self.encode_img_base64(self.get_img_file_path(col1, col2))
@@ -98,9 +112,12 @@ class NeuroSymbolicVisualizer:
             model="gpt-4o-mini",
             messages=[
                 {"role": "system",
-                 "content": "You're part of visualization recommendation system. Rank how good a visualization is. Answer with a number in the range 1-100, and no other characters are allowed"},
+                 "content":
+                     "You're part of visualization recommendation system. Rank how good a visualization is. "
+                     "Answer with a single number in the range 1-100, no other characters are allowed in the first line. "
+                     "Provide a brief explanation in the next line"},
                 {"role": "user",
-                 "content": f"Here's the schema of the dataset for which the visualization was generated:\n{self.schema} \n"},
+                 "content": f"For context, here's the schema of the dataset for which the visualization was generated:\n{self.schema} \n"},
                 {
                     "role": "user",
                     "content": [
@@ -112,39 +129,18 @@ class NeuroSymbolicVisualizer:
                 }
             ]
         ).choices[0].message.content
+        (score, explanation) = response.partition("\n")[::2]
         try:
-            return int(response)
+            return int(score), explanation.strip()
         except ValueError:
             print(f"LLM evaluation failed for: {self.get_img_file_path(col1, col2)} with completion: {response}")
-            return 0
+            return 0, "error"
 
     def all_columns(self) -> list[str]:
         """
-        string columns (such as origin) are removed. These are used for multi-faceted plots
-        (many side by side plots per origin)
+        string columns (such as origin) are removed. These are used for multi-faceted plots (many
+        side by side plots per chart)
+
         :return: valid columns (features) in the dataset
         """
         return [feature['name'] for feature in self.schema['field'] if feature['type'] != 'string']
-
-    def run_default_recommendation(self):
-        """
-        Runs a default chart recommendation based on a predefined input specification.
-        """
-        (col1, col2) = self.recommend_columns_llm()
-        # llm_cost = self.recommend_charts_asp(col1, col2)
-
-        col_combinations = list(combinations(self.all_columns(), 2))
-        for cols in col_combinations:
-            self.recommend_charts_asp(*cols)
-
-        all_chart_costs = [self.eval_chart_llm(*col) for col in col_combinations]
-        # print(f"LLM cost: {llm_cost}")
-        print(f"All chart costs: {list(zip(col_combinations, all_chart_costs))}")
-        # print(f"all combinations: {col_combinations}")
-
-        print(f"llm choice: {(col1, col2)}")
-
-# Example usage
-if __name__ == "__main__":
-    recommender = NeuroSymbolicVisualizer(data.cars)
-    recommender.run_default_recommendation()
