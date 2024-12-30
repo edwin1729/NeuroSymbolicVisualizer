@@ -37,13 +37,22 @@ class NeuroSymbolicVisualizer:
     def get_img_file_path(self, col1: str, col2: str) -> str:
         return os.path.join(self.img_folder, f"{col1}-{col2}.svg")
 
-    def encode_img_base64(self, image_path: str) -> str:
-        """
-        :return: base64 encoded image strings of an svg chart
-        """
-        with open(image_path, "rb") as image_file:
-            png_data = cairosvg.svg2png(url=image_path)
-            return base64.b64encode(png_data).decode("utf-8")
+    def recommend_columns_llm(self) -> (str, str):
+        column_guesses = self.column_choice_llm.chat.completions.create(
+            model="gpt-4o-mini",
+            messages=[
+                {"role": "system",
+                 "content": "You're part of visualization recommendation system. You pick two features from a python dict file to plot, whose correlation is insightful. Answer in two words seperated by a space"},
+                {
+                    "role": "user",
+                    "content": str(self.schema)
+                }
+            ]
+        ).choices[0].message.content.split()
+        # If the LLM provides an invalid output (which it hasen't done in practice) take the closest one
+        columns = [difflib.get_close_matches(word, self.all_columns(), n=1, cutoff=0.0)[0]
+                   for word in column_guesses[:2]]
+        return columns[0], columns[1]
 
     def recommend_charts_asp(self, col1: str, col2: str):
         """
@@ -70,6 +79,14 @@ class NeuroSymbolicVisualizer:
         chart: FacetChart = self.renderer.render(spec=spec_answer, data=self.df)
         chart = chart.configure_view(continuousWidth=130, continuousHeight=130)
         chart.save(self.get_img_file_path(col1, col2))
+
+    def encode_img_base64(self, image_path: str) -> str:
+        """
+        :return: base64 encoded image strings of an svg chart
+        """
+        with open(image_path, "rb") as image_file:
+            png_data = cairosvg.svg2png(url=image_path)
+            return base64.b64encode(png_data).decode("utf-8")
 
     def eval_chart_llm(self, col1: str, col2: str) -> int:
         """
@@ -100,23 +117,6 @@ class NeuroSymbolicVisualizer:
         except ValueError:
             print(f"LLM evaluation failed for: {self.get_img_file_path(col1, col2)} with completion: {response}")
             return 0
-
-    def recommend_columns_llm(self) -> (str, str):
-        column_guesses = self.column_choice_llm.chat.completions.create(
-            model="gpt-4o-mini",
-            messages=[
-                {"role": "system",
-                 "content": "You're part of visualization recommendation system. You pick two features from a python dict file to plot, whose correlation is insightful. Answer in two words seperated by a space"},
-                {
-                    "role": "user",
-                    "content": str(self.schema)
-                }
-            ]
-        ).choices[0].message.content.split()
-        # If the LLM provides an invalid output (which it hasen't done in practice) take the closest one
-        columns = [difflib.get_close_matches(word, self.all_columns(), n=1, cutoff=0.0)[0]
-                   for word in column_guesses[:2]]
-        return columns[0], columns[1]
 
     def all_columns(self) -> list[str]:
         """
